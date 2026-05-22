@@ -146,48 +146,109 @@ export function Login() {
   };
 
   const [showLocationModal, setShowLocationModal] = useState(true);
+  const [locationGranted, setLocationGranted] = useState(false);
+  const [locationDismissing, setLocationDismissing] = useState(false);
   const locationContext = useGlobalLocation();
   const permissionStatus = locationContext?.permissionStatus;
 
   // We only want to show the custom prompt if permission hasn't been granted/denied yet
-  const needsLocationPrompt = permissionStatus === "prompt" && showLocationModal;
+  const needsLocationPrompt = permissionStatus === "prompt" && showLocationModal && !locationGranted;
+  // If permission was already granted from a prior visit, don't show at all
+  const showBar = needsLocationPrompt || (locationGranted && showLocationModal);
+
+  const handleAllowLocation = async () => {
+    try {
+      await locationContext.requestLocation();
+      setLocationGranted(true);
+      // Show success briefly, then smoothly dismiss
+      setTimeout(() => {
+        setLocationDismissing(true);
+        setTimeout(() => setShowLocationModal(false), 400);
+      }, 1200);
+    } catch {
+      setLocationDismissing(true);
+      setTimeout(() => setShowLocationModal(false), 400);
+    }
+  };
+
+  const handleSkipLocation = () => {
+    setLocationDismissing(true);
+    setTimeout(() => setShowLocationModal(false), 400);
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden bg-transparent">
-      {/* Custom Location Overlay */}
-      {needsLocationPrompt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-white/10 p-8 rounded-3xl max-w-md w-full shadow-2xl text-center relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-red-500 to-orange-500"></div>
-            <div className="w-16 h-16 bg-red-100 dark:bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-              <MapPin className="w-8 h-8 text-red-600 dark:text-red-400" />
-            </div>
-            <h3 className="text-xl font-black text-gray-900 dark:text-white mb-3">
-              Enable Location Access
-            </h3>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-8 leading-relaxed">
-              WeCare uses your location to instantly connect you with the nearest specialized healthcare professionals and clinics.
-            </p>
-            <div className="flex flex-col gap-3">
-              <button
-                onClick={async () => {
-                  await locationContext.requestLocation();
-                  setShowLocationModal(false);
-                }}
-                className="w-full py-3.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-lg shadow-red-500/20 transition-all active:scale-95"
-              >
-                Allow Location Access
-              </button>
-              <button
-                onClick={() => setShowLocationModal(false)}
-                className="w-full py-3.5 bg-gray-100 hover:bg-gray-200 dark:bg-white/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all active:scale-95"
-              >
-                Skip for now
-              </button>
+      {/* Chrome-style Location Permission Bar — slides in from top */}
+      {showBar && (
+        <div 
+          className={cn(
+            "fixed top-0 left-0 right-0 z-50 transition-all duration-400 ease-out",
+            locationDismissing ? "translate-y-[-100%] opacity-0" : "translate-y-0 opacity-100"
+          )}
+          style={{ animation: locationDismissing ? undefined : "slideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1)" }}
+        >
+          <div className="bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl border-b border-gray-200/80 dark:border-white/10 shadow-lg shadow-black/5 dark:shadow-black/30">
+            <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3 sm:gap-4">
+              {/* Icon */}
+              <div className={cn(
+                "w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-all duration-500",
+                locationGranted 
+                  ? "bg-emerald-100 dark:bg-emerald-500/20" 
+                  : "bg-red-100 dark:bg-red-500/20"
+              )}>
+                {locationGranted ? (
+                  <Check className="w-4.5 h-4.5 text-emerald-600 dark:text-emerald-400" />
+                ) : (
+                  <MapPin className="w-4.5 h-4.5 text-red-600 dark:text-red-400" />
+                )}
+              </div>
+              
+              {/* Text */}
+              <div className="flex-1 min-w-0">
+                {locationGranted ? (
+                  <p className="text-sm font-bold text-emerald-700 dark:text-emerald-400">
+                    Location access granted ✓
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-sm font-bold text-gray-900 dark:text-white leading-tight">
+                      WeCare wants to know your location
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 hidden sm:block">
+                      Used to find nearby doctors and clinics in your area
+                    </p>
+                  </>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              {!locationGranted && (
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={handleSkipLocation}
+                    className="px-4 py-2 text-xs font-bold text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/5 rounded-lg transition-all"
+                  >
+                    Block
+                  </button>
+                  <button
+                    onClick={handleAllowLocation}
+                    className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm shadow-blue-500/20 transition-all active:scale-95"
+                  >
+                    Allow
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
+      {/* Slide-down animation keyframe (injected inline) */}
+      <style>{`
+        @keyframes slideDown {
+          from { transform: translateY(-100%); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+      `}</style>
       {/* Ambient background decoration specific to login */}
       <div className={cn(
         "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full blur-[120px] pointer-events-none z-0 transition-colors duration-500",
