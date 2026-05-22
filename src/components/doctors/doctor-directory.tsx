@@ -271,7 +271,8 @@ export function DoctorDirectory({ isVetMode, onBook, bookingRefreshCounter = 0 }
                 doctors={filteredDoctors} 
                 userLocation={coordinates} 
                 isVetMode={isVetMode} 
-                onRequestLocation={requestLocation} 
+                onRequestLocation={requestLocation}
+                onBook={onBook}
               />
             </motion.div>
           ) : (
