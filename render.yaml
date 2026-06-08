@@ -10,3 +10,7 @@ services:
         value: production
       - key: PORT
         value: 3000
+      - key: VITE_GOOGLE_MAPS_API_KEY
+        value: AIzaSyAXn75bipLXVHsWRhTgcj8_kkU4pAvUyRk
+      - key: GEMINI_API_KEY
+        value: gnBL8oq8txxP1eyRMvwRBMUR7T7TxFREybj1dQ1G
