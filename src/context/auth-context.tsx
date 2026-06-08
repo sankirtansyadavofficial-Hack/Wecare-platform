@@ -57,12 +57,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (docSnap.exists()) {
             setUser({ id: currentUser.uid, ...docSnap.data() } as UserProfile);
           } else {
-            console.warn("No user profile found in Firestore for this auth user.");
-            setUser(null);
+            // Fallback: create a basic profile from Firebase Auth data
+            // This handles cases where Firestore write failed during sign-up
+            console.warn("No Firestore profile found, using fallback from Auth user.");
+            setUser({
+              id: currentUser.uid,
+              name: currentUser.displayName || currentUser.email?.split("@")[0] || "User",
+              email: currentUser.email || "",
+              role: "patient",
+            });
           }
         } catch (err) {
           console.error("Error fetching user profile:", err);
-          setUser(null);
+          // Even on error, create a minimal profile so user isn't locked out
+          setUser({
+            id: currentUser.uid,
+            name: currentUser.displayName || currentUser.email?.split("@")[0] || "User",
+            email: currentUser.email || "",
+            role: "patient",
+          });
         }
       } else {
         setUser(null);

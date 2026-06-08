@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { 
   ShieldCheck, HeartPulse, User as UserIcon, Mail, Lock, 
@@ -41,10 +41,24 @@ export function Login() {
   // Existing code hooks
   const navigate = useNavigate();
   const location = useLocation();
-  const { login } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const { requestLocation, isLoading: isLocationLoading } = useGlobalLocation();
 
   const from = location.state?.from?.pathname || "/";
+
+  // Auto-redirect when user becomes authenticated
+  // This fires AFTER onAuthStateChanged + Firestore profile fetch complete
+  useEffect(() => {
+    if (user && !isAuthLoading) {
+      if (user.role === "doctor") {
+        navigate("/doctor-dashboard", { replace: true });
+      } else if (user.role === "ngo") {
+        navigate("/ngo-dashboard", { replace: true });
+      } else {
+        navigate(from === "/login" ? "/" : from, { replace: true });
+      }
+    }
+  }, [user, isAuthLoading, navigate, from]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -120,14 +134,8 @@ export function Login() {
         await signInWithEmailAndPassword(auth, email, password);
       }
 
-      // Redirection logic
-      if (isDoctor) {
-        navigate("/doctor-dashboard", { replace: true });
-      } else if (isNgo) {
-        navigate("/ngo-dashboard", { replace: true });
-      } else {
-        navigate(from === "/login" ? "/" : from, { replace: true });
-      }
+      // Navigation is handled automatically by the useEffect watching `user` state.
+      // Do NOT navigate here — the auth context needs time to load the Firestore profile.
     } catch (err: any) {
       console.error("Auth Error:", err);
       // Format Firebase error codes to user-friendly messages

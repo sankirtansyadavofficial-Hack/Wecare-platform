@@ -2,8 +2,21 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/auth-context";
 
 export function ProtectedRoute() {
-  const { user } = useAuth();
+  const { user, isLoading } = useAuth();
   const location = useLocation();
+
+  // CRITICAL: While Firebase auth state is still loading, show nothing instead of
+  // redirecting to login. This prevents the redirect-loop on sign-in.
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-transparent">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-4 border-gray-200 dark:border-white/10 border-t-red-500 rounded-full animate-spin"></div>
+          <p className="text-sm font-bold text-gray-500 dark:text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />;
