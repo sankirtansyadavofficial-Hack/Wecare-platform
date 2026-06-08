@@ -497,7 +497,7 @@ export function DoctorDashboard() {
                                 {apt.status}
                               </span>
 
-                              {((apt.status === 'Waiting' || apt.status === 'Checked-In' || apt.status === 'In-Progress' || apt.status === 'Approved') && apt.type === 'Video Consult') && (
+                              {((apt.status === 'Waiting' || apt.status === 'Checked-In' || apt.status === 'In-Progress') && apt.type === 'Video Consult') && (
                                 <Link
                                   to="/video-consult?role=doctor"
                                   className={`px-4 py-2 bg-${accentColor}-600 hover:bg-${accentColor}-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-sm hover:shadow active:scale-95`}

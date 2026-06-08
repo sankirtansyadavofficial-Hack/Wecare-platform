@@ -1,16 +1,25 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { 
   ShieldCheck, HeartPulse, User as UserIcon, Mail, Lock, 
   Stethoscope, ChevronRight, Activity, Phone, Calendar, 
-  Award, FileText, Upload, Check, AlertCircle, Heart, MapPin
+  Award, FileText, Upload, Check, AlertCircle, Heart, MapPin,
+  Smartphone
 } from "lucide-react";
 import { useAuth } from "@/context/auth-context";
 import { useLocation as useGlobalLocation } from "@/context/location-context";
 import { cn } from "@/lib/utils";
 import { auth, db } from "@/lib/firebase";
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword,
+  RecaptchaVerifier,
+  signInWithPhoneNumber,
+  PhoneAuthProvider,
+  signInWithCredential,
+  type ConfirmationResult
+} from "firebase/auth";
+import { doc, setDoc, getDoc } from "firebase/firestore";
 
 export function Login() {
   const [selectedRole, setSelectedRole] = useState<"patient" | "doctor" | "ngo">("patient");
@@ -78,7 +87,115 @@ export function Login() {
   // Firebase Auth State
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [waitingForAuth, setWaitingForAuth] = useState(false);
 
+  // Phone Auth State
+  const [authMethod, setAuthMethod] = useState<"email" | "phone">("email");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
+  const recaptchaContainerRef = useRef<HTMLDivElement>(null);
+  const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
+
+  // Keep authLoading=true until user is actually populated by auth context
+  useEffect(() => {
+    if (waitingForAuth && user && !isAuthLoading) {
+      setAuthLoading(false);
+      setWaitingForAuth(false);
+    }
+  }, [waitingForAuth, user, isAuthLoading]);
+
+  // Setup invisible recaptcha
+  const setupRecaptcha = useCallback(() => {
+    if (recaptchaVerifierRef.current) return; // already set up
+    try {
+      recaptchaVerifierRef.current = new RecaptchaVerifier(auth, "recaptcha-container", {
+        size: "invisible",
+        callback: () => { /* solved */ },
+        "expired-callback": () => {
+          recaptchaVerifierRef.current = null;
+        }
+      });
+    } catch (err) {
+      console.error("Recaptcha setup error:", err);
+    }
+  }, []);
+
+  // Send OTP
+  const handleSendOTP = async () => {
+    setAuthError("");
+    if (!phoneNumber || phoneNumber.length < 10) {
+      setAuthError("Please enter a valid phone number with country code (e.g. +91XXXXXXXXXX)");
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      setupRecaptcha();
+      if (!recaptchaVerifierRef.current) {
+        throw new Error("Recaptcha failed to initialize. Please refresh the page.");
+      }
+      const formatted = phoneNumber.startsWith("+") ? phoneNumber : `+91${phoneNumber}`;
+      const result = await signInWithPhoneNumber(auth, formatted, recaptchaVerifierRef.current);
+      setConfirmationResult(result);
+      setOtpSent(true);
+      setAuthLoading(false);
+    } catch (err: any) {
+      console.error("OTP Error:", err);
+      recaptchaVerifierRef.current = null;
+      if (err.code === "auth/invalid-phone-number") {
+        setAuthError("Invalid phone number format. Use country code like +91XXXXXXXXXX");
+      } else if (err.code === "auth/too-many-requests") {
+        setAuthError("Too many attempts. Please wait a few minutes and try again.");
+      } else {
+        setAuthError(err.message || "Failed to send OTP. Please try again.");
+      }
+      setAuthLoading(false);
+    }
+  };
+
+  // Verify OTP
+  const handleVerifyOTP = async () => {
+    if (!confirmationResult || !otpCode || otpCode.length < 6) {
+      setAuthError("Please enter the 6-digit OTP code.");
+      return;
+    }
+    setAuthError("");
+    setAuthLoading(true);
+    try {
+      const result = await confirmationResult.confirm(otpCode);
+      // Check if user profile exists, if not create one
+      const userDocRef = doc(db, "users", result.user.uid);
+      const userDoc = await getDoc(userDocRef);
+      if (!userDoc.exists()) {
+        await setDoc(userDocRef, {
+          name: result.user.displayName || result.user.phoneNumber || "User",
+          email: result.user.email || "",
+          phone: result.user.phoneNumber || phoneNumber,
+          role: selectedRole,
+          avatar: "",
+          bloodGroup: "O+",
+          createdAt: new Date().toISOString()
+        });
+      }
+      // Keep loading=true until useEffect detects the user
+      setWaitingForAuth(true);
+    } catch (err: any) {
+      console.error("OTP Verify Error:", err);
+      if (err.code === "auth/invalid-verification-code") {
+        setAuthError("Invalid OTP code. Please check and try again.");
+      } else if (err.code === "auth/code-expired") {
+        setAuthError("OTP has expired. Please request a new one.");
+        setOtpSent(false);
+        setConfirmationResult(null);
+      } else {
+        setAuthError(err.message || "OTP verification failed.");
+      }
+      setAuthLoading(false);
+    }
+  };
+
+  // Email/Password Submit
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError("");
@@ -97,11 +214,9 @@ export function Login() {
           return;
         }
         
-        // 1. Create User in Firebase Auth
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
+        const fbUser = userCredential.user;
 
-        // 2. Save Rich Profile to Firestore
         const profileData = {
           name,
           email,
@@ -119,26 +234,23 @@ export function Login() {
           createdAt: new Date().toISOString()
         };
 
-        // We use Promise.race to timeout setDoc if Firestore is not initialized (which causes infinite hang)
         const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error("Firestore timeout: Did you create the database in the Firebase Console?")), 10000)
         );
         
         await Promise.race([
-          setDoc(doc(db, "users", user.uid), profileData),
+          setDoc(doc(db, "users", fbUser.uid), profileData),
           timeoutPromise
         ]);
 
       } else {
-        // Sign In
         await signInWithEmailAndPassword(auth, email, password);
       }
 
-      // Navigation is handled automatically by the useEffect watching `user` state.
-      // Do NOT navigate here — the auth context needs time to load the Firestore profile.
+      // Keep loading=true until the useEffect auto-redirect fires
+      setWaitingForAuth(true);
     } catch (err: any) {
       console.error("Auth Error:", err);
-      // Format Firebase error codes to user-friendly messages
       if (err.code === "auth/email-already-in-use") {
         setAuthError("This email is already registered. Please sign in.");
       } else if (err.code === "auth/invalid-credential") {
@@ -148,9 +260,9 @@ export function Login() {
       } else {
         setAuthError(err.message || "An error occurred during authentication.");
       }
-    } finally {
       setAuthLoading(false);
     }
+    // NOTE: no finally { setAuthLoading(false) } — we keep it true until redirect
   };
 
   const [showLocationModal, setShowLocationModal] = useState(true);
@@ -576,42 +688,126 @@ export function Login() {
               </>
             )}
 
-            <div>
-              <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-2">Email Address</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Mail className="h-5 w-5 text-gray-400" />
-                </div>
-                <input 
-                  type="email" 
-                  value={email} 
-                  onChange={e => setEmail(e.target.value)} 
-                  required 
-                  className="w-full bg-white/60 dark:bg-zinc-900/60 border border-gray-200 dark:border-white/10 rounded-xl pl-11 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500/50 outline-none transition-all" 
-                  placeholder="name@example.com" 
-                />
+            {/* Auth Method Toggle (Sign-in only) */}
+            {!isSignUp && (
+              <div className="flex p-1 bg-gray-100/50 dark:bg-zinc-900/50 rounded-xl border border-gray-200/50 dark:border-white/5 backdrop-blur-md mb-2">
+                <button 
+                  type="button"
+                  onClick={() => { setAuthMethod("email"); setAuthError(""); setOtpSent(false); }}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all",
+                    authMethod === "email" 
+                      ? "bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm" 
+                      : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                  )}
+                >
+                  <Mail className="w-3.5 h-3.5" /> Email & Password
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => { setAuthMethod("phone"); setAuthError(""); }}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all",
+                    authMethod === "phone" 
+                      ? "bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm" 
+                      : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                  )}
+                >
+                  <Smartphone className="w-3.5 h-3.5" /> Phone OTP
+                </button>
               </div>
-            </div>
+            )}
 
-            <div>
-              <div className="flex justify-between items-center mb-2">
-                <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Password</label>
-                {!isSignUp && <a href="#" className="text-xs font-bold text-red-600 dark:text-red-400 hover:underline">Forgot?</a>}
-              </div>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Lock className="h-5 w-5 text-gray-400" />
+            {/* Email + Password Fields */}
+            {(authMethod === "email" || isSignUp) && (
+              <>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-2">Email Address</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                      <Mail className="h-5 w-5 text-gray-400" />
+                    </div>
+                    <input 
+                      type="email" 
+                      value={email} 
+                      onChange={e => setEmail(e.target.value)} 
+                      required 
+                      className="w-full bg-white/60 dark:bg-zinc-900/60 border border-gray-200 dark:border-white/10 rounded-xl pl-11 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500/50 outline-none transition-all" 
+                      placeholder="name@example.com" 
+                    />
+                  </div>
                 </div>
-                <input 
-                  type="password" 
-                  value={password} 
-                  onChange={e => setPassword(e.target.value)} 
-                  required 
-                  className="w-full bg-white/60 dark:bg-zinc-900/60 border border-gray-200 dark:border-white/10 rounded-xl pl-11 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500/50 outline-none transition-all" 
-                  placeholder="••••••••" 
-                />
-              </div>
-            </div>
+
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Password</label>
+                    {!isSignUp && <a href="#" className="text-xs font-bold text-red-600 dark:text-red-400 hover:underline">Forgot?</a>}
+                  </div>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                      <Lock className="h-5 w-5 text-gray-400" />
+                    </div>
+                    <input 
+                      type="password" 
+                      value={password} 
+                      onChange={e => setPassword(e.target.value)} 
+                      required 
+                      className="w-full bg-white/60 dark:bg-zinc-900/60 border border-gray-200 dark:border-white/10 rounded-xl pl-11 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500/50 outline-none transition-all" 
+                      placeholder="••••••••" 
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Phone OTP Fields (Sign-in only) */}
+            {authMethod === "phone" && !isSignUp && (
+              <>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-2">Phone Number</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                      <Phone className="h-5 w-5 text-gray-400" />
+                    </div>
+                    <input 
+                      type="tel" 
+                      value={phoneNumber} 
+                      onChange={e => setPhoneNumber(e.target.value)} 
+                      disabled={otpSent}
+                      className="w-full bg-white/60 dark:bg-zinc-900/60 border border-gray-200 dark:border-white/10 rounded-xl pl-11 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500/50 outline-none transition-all disabled:opacity-60" 
+                      placeholder="+91 XXXXXXXXXX" 
+                    />
+                  </div>
+                </div>
+
+                {otpSent && (
+                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-2">Enter 6-Digit OTP</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                        <Lock className="h-5 w-5 text-gray-400" />
+                      </div>
+                      <input 
+                        type="text" 
+                        value={otpCode} 
+                        onChange={e => setOtpCode(e.target.value.replace(/\D/g, "").substring(0, 6))} 
+                        maxLength={6}
+                        autoFocus
+                        className="w-full bg-white/60 dark:bg-zinc-900/60 border border-gray-200 dark:border-white/10 rounded-xl pl-11 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500/50 outline-none transition-all text-lg font-mono tracking-[0.5em]" 
+                        placeholder="••••••" 
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 flex items-center gap-1">
+                      <Check className="w-3 h-3 text-green-500" /> OTP sent to {phoneNumber}
+                      <button type="button" onClick={() => { setOtpSent(false); setOtpCode(""); setConfirmationResult(null); recaptchaVerifierRef.current = null; }} className="ml-auto text-xs font-bold text-red-500 hover:underline">Resend</button>
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Invisible Recaptcha Container */}
+            <div id="recaptcha-container" ref={recaptchaContainerRef}></div>
 
             {authError && (
               <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 text-red-600 dark:text-red-400 px-4 py-3 rounded-xl text-sm font-medium flex items-start gap-2 mt-4">
@@ -620,29 +816,60 @@ export function Login() {
               </div>
             )}
 
-            <button 
-              type="submit" 
-              disabled={authLoading}
-              className={cn(
-                "w-full text-white font-bold py-4 rounded-xl transition-all mt-6 flex items-center justify-center gap-2 group shadow-md disabled:opacity-70 disabled:cursor-not-allowed",
-                isDoctor 
-                  ? (practiceDomain === "veterinary" 
-                      ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20" 
-                      : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/20") 
-                  : (isNgo 
-                      ? "bg-violet-600 hover:bg-violet-700 shadow-violet-500/20" 
-                      : "bg-red-600 hover:bg-red-700 shadow-red-500/20")
-              )}
-            >
-              {authLoading ? (
-                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-              ) : (
-                <>
-                  {isSignUp ? "Create Account" : "Sign In"}
-                  <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                </>
-              )}
-            </button>
+            {/* Submit / OTP Buttons */}
+            {authMethod === "phone" && !isSignUp ? (
+              <button 
+                type="button"
+                onClick={otpSent ? handleVerifyOTP : handleSendOTP}
+                disabled={authLoading}
+                className={cn(
+                  "w-full text-white font-bold py-4 rounded-xl transition-all mt-4 flex items-center justify-center gap-2 group shadow-md disabled:opacity-70 disabled:cursor-not-allowed",
+                  isDoctor 
+                    ? (practiceDomain === "veterinary" 
+                        ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20" 
+                        : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/20") 
+                    : (isNgo 
+                        ? "bg-violet-600 hover:bg-violet-700 shadow-violet-500/20" 
+                        : "bg-red-600 hover:bg-red-700 shadow-red-500/20")
+                )}
+              >
+                {authLoading ? (
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                ) : (
+                  <>
+                    {otpSent ? "Verify OTP & Sign In" : "Send OTP"}
+                    <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                  </>
+                )}
+              </button>
+            ) : (
+              <button 
+                type="submit" 
+                disabled={authLoading}
+                className={cn(
+                  "w-full text-white font-bold py-4 rounded-xl transition-all mt-4 flex items-center justify-center gap-2 group shadow-md disabled:opacity-70 disabled:cursor-not-allowed",
+                  isDoctor 
+                    ? (practiceDomain === "veterinary" 
+                        ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20" 
+                        : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/20") 
+                    : (isNgo 
+                        ? "bg-violet-600 hover:bg-violet-700 shadow-violet-500/20" 
+                        : "bg-red-600 hover:bg-red-700 shadow-red-500/20")
+                )}
+              >
+                {authLoading ? (
+                  <div className="flex items-center gap-3">
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                    <span className="text-sm">Signing you in...</span>
+                  </div>
+                ) : (
+                  <>
+                    {isSignUp ? "Create Account" : "Sign In"}
+                    <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                  </>
+                )}
+              </button>
+            )}
           </form>
           
           <div className="mt-8 text-center border-t border-gray-200/50 dark:border-white/10 pt-6">

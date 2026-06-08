@@ -164,7 +164,7 @@ export async function sendPayment(
     success: true,
     hash: response.hash,
     ledger: response.ledger,
-    fee: response.fee_charged || "100",
+    fee: (response as any).fee_charged || "100",
     timestamp: new Date().toISOString(),
     explorerUrl: `https://stellar.expert/explorer/testnet/tx/${response.hash}`,
   };
