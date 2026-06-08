@@ -110,8 +110,10 @@ export function Login() {
   const setupRecaptcha = useCallback(() => {
     if (recaptchaVerifierRef.current) return; // already set up
     try {
+      const siteKey = (import.meta as any).env?.VITE_FIREBASE_RECAPTCHA_KEY || "AdpetEYCpmpqbuXMPTSFE8Pki3W9CFQtatBu4IHwQ-JuX3ar5rtkpe72P1MjwDyUUHYNbtVoaZzWA6oqZom0HUOJMpxRASad6NrQ7W61qx5m96hZcu72fEf3kTSAq0S7buH7NEwdiw-yg1kx3AVPvNMbNw";
       recaptchaVerifierRef.current = new RecaptchaVerifier(auth, "recaptcha-container", {
         size: "invisible",
+        sitekey: siteKey,
         callback: () => { /* solved */ },
         "expired-callback": () => {
           recaptchaVerifierRef.current = null;
