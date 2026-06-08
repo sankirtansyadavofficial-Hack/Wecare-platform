@@ -198,6 +198,16 @@ export function Login() {
   // Email/Password Submit
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (authMethod === "phone" && !isSignUp) {
+      if (otpSent) {
+        await handleVerifyOTP();
+      } else {
+        await handleSendOTP();
+      }
+      return;
+    }
+
     setAuthError("");
     setAuthLoading(true);
     
@@ -819,8 +829,7 @@ export function Login() {
             {/* Submit / OTP Buttons */}
             {authMethod === "phone" && !isSignUp ? (
               <button 
-                type="button"
-                onClick={otpSent ? handleVerifyOTP : handleSendOTP}
+                type="submit"
                 disabled={authLoading}
                 className={cn(
                   "w-full text-white font-bold py-4 rounded-xl transition-all mt-4 flex items-center justify-center gap-2 group shadow-md disabled:opacity-70 disabled:cursor-not-allowed",

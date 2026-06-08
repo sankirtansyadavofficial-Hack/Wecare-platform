@@ -29,9 +29,9 @@ export function getCurrentPosition(): Promise<Coordinates> {
         reject(error);
       },
       {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0,
+        enableHighAccuracy: false,
+        timeout: 5000,
+        maximumAge: 300000, // 5 minutes cached position
       }
     );
   });
